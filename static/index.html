@@ -1,0 +1,1018 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Printer Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<style>
+  :root {
+    --bg: #eef1f5; --panel: #ffffff; --head: #f7f8fa; --text: #1d2330; --muted: #6b7385; --line: #dde1e7;
+    --accent: #2f6fde; --ok: #1f9d55; --warn: #d98b00; --bad: #d33a3a;
+    --done: #2f6fde; --todo: #c9cfda; --below: #e7eaf0; --nozzle: #d33a3a;
+    --bar-h: 48px; --status-h: 64px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101318; --panel: #1a1f27; --head: #212733; --text: #e6e9ef; --muted: #8d95a6; --line: #2b313c;
+      --accent: #5b8ff0; --done: #5b8ff0; --todo: #5d6878; --below: #2c333f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+         display: flex; flex-direction: column; overflow: hidden; }
+
+  /* top navbar */
+  .navbar { height: var(--bar-h); flex: none; display: flex; align-items: center; gap: 12px; padding: 0 16px;
+            background: var(--accent); color: #fff; }
+  .navbar h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .navbar .host { opacity: .8; font-size: 12px; flex: 1; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); display: inline-block; box-shadow: 0 0 0 2px rgba(255,255,255,.6); }
+  .dot.on { background: #3ddc84; }
+  .badge { padding: 3px 10px; border-radius: 999px; font-weight: 600; font-size: 12px; background: rgba(255,255,255,.2); color: #fff; }
+  .badge.PRINTING { background: #fff; color: var(--accent); }
+  .badge.PAUSE { background: var(--warn); }
+  .badge.IDLE { background: var(--ok); }
+
+  /* dashboard grid: fills the space between navbar and status bar */
+  .dash { flex: 1; min-height: 0; display: grid; gap: 10px; padding: 10px;
+          grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.6fr) minmax(280px, 1fr);
+          grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+          grid-template-areas: "jog preview files" "temps preview term"; }
+  #pJog { grid-area: jog; } #pTemps { grid-area: temps; } #pPreview { grid-area: preview; }
+  #pFiles { grid-area: files; } #pTerm { grid-area: term; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+  .panel-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--head); border-bottom: 1px solid var(--line); }
+  .panel-head h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin: 0; flex: 1; color: var(--muted); }
+  .panel-head .ico { width: 16px; height: 16px; color: var(--accent); flex: none; }
+  .panel-body { flex: 1; min-height: 0; padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow: auto; }
+
+  /* status bar (print job) */
+  .status { height: var(--status-h); flex: none; display: flex; align-items: center; gap: 16px; padding: 0 16px;
+            background: var(--panel); border-top: 1px solid var(--line); }
+  .status .job { flex: 1; min-width: 0; }
+  .status .job-top { display: flex; gap: 12px; align-items: baseline; white-space: nowrap; }
+  .status .file { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+  .status .stat { font-variant-numeric: tabular-nums; }
+  .status .stat b { font-size: 15px; }
+  .bar { height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 6px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .5s; }
+
+  button { font: inherit; padding: 5px 11px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.sm { padding: 2px 8px; font-size: 12px; }
+  button.danger { color: var(--bad); }
+  button.danger.armed { background: var(--bad); color: #fff; border-color: var(--bad); }
+  input[type=number], input[type=text], select { font: inherit; padding: 4px 7px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); min-width: 0; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .muted { color: var(--muted); }
+  .hint { font-size: 11px; color: var(--muted); }
+
+  /* jog */
+  .jogwrap { display: flex; gap: 14px; justify-content: center; align-items: center; flex: 1 0 auto; }
+  .jog { display: grid; grid-template-columns: repeat(3, 46px); grid-auto-rows: 34px; gap: 4px; }
+  .jog button { padding: 0; font-weight: 600; }
+  .seg button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .posgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .pos { background: var(--bg); border-radius: 6px; padding: 2px 6px; text-align: center; line-height: 1.25; }
+  .pos b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+  .pos small { color: var(--muted); font-size: 11px; }
+
+  /* temps */
+  .temps { display: grid; grid-template-columns: auto 1fr 64px auto; gap: 6px 8px; align-items: center; }
+  .temps .val { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 15px; }
+  .chartbox { flex: 1; min-height: 60px; position: relative; }
+  .chartbox canvas, .previewbox canvas, #view3d { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #view3d canvas { cursor: grab; }
+
+  /* preview */
+  .previewbox { flex: 1; min-height: 0; position: relative; background: var(--bg); border-radius: 6px; }
+
+  /* files */
+  .files { list-style: none; padding: 0; margin: 0; flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+  .files li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .files li:last-child { border-bottom: 0; }
+  .files li span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* terminal */
+  #console { flex: 1; min-height: 0; overflow: auto; background: var(--bg); border-radius: 6px; padding: 6px 8px;
+             font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+  #console .tx { color: var(--accent); }
+  #console .tx.from-cura { color: #b45fd6; }
+  #console .sys { color: var(--muted); font-style: italic; }
+  #console .src { display: inline-block; min-width: 52px; color: var(--muted); }
+  #console .poll { display: none; opacity: .6; }
+  #console.show-polls .poll { display: block; }
+
+  /* upload progress */
+  .upload { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; display: none; }
+  .upload.show { display: block; }
+  .upload .top { display: flex; gap: 8px; align-items: baseline; }
+  .upload .name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .upload .pct { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .upload .bar > div { transition: width .3s; }
+  .upload.done .bar > div { background: var(--ok); }
+  .upload.fail .bar > div { background: var(--bad); }
+  .upload .bar.busy > div { width: 100% !important; background: repeating-linear-gradient(45deg, var(--accent) 0 10px, color-mix(in srgb, var(--accent) 55%, transparent) 10px 20px); background-size: 28px 28px; animation: stripes 1s linear infinite; }
+  @keyframes stripes { to { background-position: 28px 0; } }
+
+  /* drag and drop */
+  #drop { position: fixed; inset: 0; z-index: 10; display: none; gap: 16px; padding: 24px; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(2px); }
+  #drop.show { display: flex; }
+  #drop > div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border: 3px dashed var(--line); border-radius: 14px; font-size: 20px; font-weight: 600; color: var(--muted); background: var(--panel); transition: all .15s; }
+  #drop > div small { font-size: 13px; font-weight: 400; }
+  #drop > div.over { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+  #drop.blocked > div { border-color: var(--bad); color: var(--bad); }
+
+  /* info dialog */
+  .navbar button.nav { background: rgba(255,255,255,.15); border-color: rgba(255,255,255,.35); color: #fff; }
+  #infoBox { position: fixed; inset: 0; z-index: 20; display: none; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg) 70%, transparent); }
+  #infoBox.show { display: flex; }
+  #infoBox .panel { width: min(640px, calc(100% - 32px)); max-height: calc(100% - 64px); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-word; }
+  .kv h3 { grid-column: 1 / -1; margin: 10px 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); }
+  .kv h3:first-child { margin-top: 0; }
+
+  #toast { position: fixed; bottom: calc(var(--status-h) + 12px); left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
+           padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .3s; pointer-events: none; max-width: calc(100% - 32px); }
+  #toast.show { opacity: 1; }
+
+  /* narrow screens: stack the panels; the page has to scroll there */
+  @media (max-width: 980px) {
+    body { overflow: auto; }
+    .dash { grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: "preview" "jog" "temps" "files" "term"; }
+    .panel { min-height: 320px; }
+    #pPreview { min-height: 70vh; }
+    .status { position: sticky; bottom: 0; }
+  }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-move" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M12 2v20M2 12h20M12 2l-3 3m3-3 3 3M12 22l-3-3m3 3 3-3M2 12l3-3m-3 3 3 3M22 12l-3-3m3 3-3 3"/></symbol>
+  <symbol id="i-temp" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M10 14V4a2 2 0 1 1 4 0v10a4 4 0 1 1-4 0Z"/></symbol>
+  <symbol id="i-cube" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 0v20M3 7l9 5 9-5"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M6 2h8l4 4v16H6V2Zm8 0v4h4"/></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M3 4h18v16H3V4Zm4 5 3 3-3 3m5 0h5"/></symbol>
+</svg>
+
+<nav class="navbar">
+  <span class="dot" id="conn"></span>
+  <h1>Printer Dashboard</h1>
+  <span class="host" id="host"></span>
+  <button class="sm nav" id="btnInfo" title="Firmware and printer information">ⓘ Info</button>
+  <span class="badge" id="state">…</span>
+</nav>
+
+<main class="dash">
+  <section class="panel" id="pJog">
+    <div class="panel-head"><svg class="ico"><use href="#i-move"/></svg><h2>Jog</h2>
+      <button class="sm" data-home="">Home all</button></div>
+    <div class="panel-body">
+      <div class="posgrid" title="Last commanded position (M114) and machine limits">
+        <div class="pos"><small>X</small><b id="posX">–</b><small id="limX"></small></div>
+        <div class="pos"><small>Y</small><b id="posY">–</b><small id="limY"></small></div>
+        <div class="pos"><small>Z</small><b id="posZ">–</b><small id="limZ"></small></div>
+      </div>
+      <div class="row seg" id="steps" style="justify-content:center">
+        <button class="sm" data-step="0.1">0.1</button><button class="sm" data-step="1">1</button><button class="sm on" data-step="10">10</button><button class="sm" data-step="50">50</button>
+        <span class="muted">mm</span>
+      </div>
+      <div class="jogwrap">
+        <div class="jog">
+          <span></span><button data-jog="Y" data-dir="1">Y+</button><span></span>
+          <button data-jog="X" data-dir="-1">X−</button><button data-home="X Y" title="Home X and Y">⌂</button><button data-jog="X" data-dir="1">X+</button>
+          <span></span><button data-jog="Y" data-dir="-1">Y−</button><span></span>
+        </div>
+        <div class="jog" style="grid-template-columns: 46px">
+          <button data-jog="Z" data-dir="1">Z+</button>
+          <button data-home="Z" title="Home Z">⌂</button>
+          <button data-jog="Z" data-dir="-1">Z−</button>
+        </div>
+      </div>
+      <div class="row" style="justify-content:center">
+        <button class="sm" data-raw="M84">Motors off</button>
+
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="pTemps">
+    <div class="panel-head"><svg class="ico"><use href="#i-temp"/></svg><h2>Temperatures</h2>
+      <button class="sm" data-preset="0,0">Cool down</button></div>
+    <div class="panel-body">
+      <div class="temps">
+        <span>Nozzle</span><span class="val" id="tNozzle">–</span>
+        <input type="number" id="setNozzle" min="0" max="280" placeholder="°C">
+        <button class="sm" data-heat="nozzle">Set</button>
+        <span>Bed</span><span class="val" id="tBed">–</span>
+        <input type="number" id="setBed" min="0" max="110" placeholder="°C">
+        <button class="sm" data-heat="bed">Set</button>
+      </div>
+      <div class="temps">
+        <span>Fan</span><span class="val"><span id="fanPct">–</span> <span class="muted" id="fanTarget" style="font-weight:400;font-size:12px"></span></span>
+        <input type="range" id="fanSet" min="0" max="100" step="5" value="0" style="grid-column: span 2">
+      </div>
+      <div class="row">
+        <button class="sm" data-preset="200,60">PLA 200/60</button>
+        <button class="sm" data-preset="235,80">PETG 235/80</button>
+      </div>
+      <div class="chartbox"><canvas id="chart"></canvas></div>
+    </div>
+  </section>
+
+  <section class="panel" id="pPreview">
+    <div class="panel-head"><svg class="ico"><use href="#i-cube"/></svg><h2>Part preview</h2>
+      <span class="row seg" style="gap:0"><button class="sm on" data-view="2d">2D</button><button class="sm" data-view="3d">3D</button></span>
+      <label class="muted"><input type="checkbox" id="follow" checked> Follow print</label></div>
+    <div class="panel-body">
+      <div class="row">
+        <select id="previewSel" style="flex:1"><option value="">Choose a G-code…</option></select>
+        <button class="sm" onclick="document.getElementById('localGcode').click()">Open local file</button>
+        <input type="file" id="localGcode" accept=".gcode,.GCODE,.gco,.GCO,.g,.G" hidden>
+      </div>
+      <div class="row">
+        <input type="range" id="layer" min="0" max="0" value="0" style="flex:1">
+        <span class="muted" id="layerInfo">–</span>
+      </div>
+      <div class="previewbox"><canvas id="preview"></canvas><div id="view3d" style="display:none"></div></div>
+      <div class="hint">Blue is printed, grey is pending, red marks the estimated nozzle position. In 3D: drag to rotate, right-drag to pan, wheel to zoom.</div>
+    </div>
+  </section>
+
+  <section class="panel" id="pFiles">
+    <div class="panel-head"><svg class="ico"><use href="#i-file"/></svg><h2>SD card</h2>
+      <button class="sm" id="btnFiles">Refresh</button>
+      <button class="sm primary" onclick="document.getElementById('upFile').click()">Upload</button>
+      <input type="file" id="upFile" accept=".gcode,.GCODE,.gco,.GCO,.g,.G" hidden></div>
+    <div class="panel-body">
+      <div class="upload" id="upBox">
+        <div class="top"><span class="name" id="upName"></span><span class="pct" id="upPct"></span></div>
+        <div class="bar" id="upBarWrap"><div id="upBar"></div></div>
+        <div class="hint" id="upStatus"></div>
+      </div>
+      <div class="hint">Tip: drag a .gcode or .gco file anywhere on the page to upload it, or to upload and print.</div>
+      <ul class="files" id="files"><li class="muted">Loading files…</li></ul>
+    </div>
+  </section>
+
+  <section class="panel" id="pTerm">
+    <div class="panel-head"><svg class="ico"><use href="#i-term"/></svg><h2>Terminal</h2>
+      <label class="muted" title="Show the status requests sent every few seconds (M105, M997, M27...) and their replies"><input type="checkbox" id="showPolls"> Polling</label>
+      <button class="sm" onclick="document.getElementById('console').innerHTML=''">Clear</button></div>
+    <div class="panel-body">
+      <div id="console"></div>
+      <form class="row" id="cmdForm" style="flex-wrap:nowrap">
+        <input type="text" id="cmd" placeholder="G-code, e.g. M115" style="flex:1" autocomplete="off">
+        <button class="primary">Send</button>
+      </form>
+    </div>
+  </section>
+</main>
+
+<footer class="status">
+  <div class="job">
+    <div class="job-top">
+      <span class="file" id="jobFile">No active print</span>
+      <span class="stat"><b id="progPct">–</b></span>
+      <span class="stat"><b id="jobLayer"></b> <span class="muted" id="jobLayerHint"></span></span>
+      <span class="stat muted">Elapsed <b id="elapsed">–</b></span>
+      <span class="stat muted">Left ≈ <b id="remaining">–</b></span>
+    </div>
+    <div class="bar"><div id="progBar"></div></div>
+  </div>
+  <button id="btnPause">Pause</button>
+  <button id="btnResume">Resume</button>
+  <button id="btnStop" class="danger">Cancel</button>
+</footer>
+<div id="toast"></div>
+<div id="infoBox">
+  <section class="panel">
+    <div class="panel-head"><h2>Printer information</h2><button class="sm" id="infoClose">Close</button></div>
+    <div class="panel-body"><dl class="kv" id="infoList"></dl></div>
+  </section>
+</div>
+<div id="drop">
+  <div data-drop="upload">⇪ Upload to SD<small>Drop here to store the file on the printer</small></div>
+  <div data-drop="print">▶ Upload &amp; print<small>Drop here to store it and start printing</small></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const BED = { x: 230, y: 230 };
+let wasConnected = false;
+let status = {}, step = 10, consoleSeq = 0, history = [];
+let sdFiles = [], cached = [];
+let model = null;          // parsed G-code for the preview
+let modelSize = 0;         // byte size of the parsed file
+
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 3500);
+}
+async function api(path, body) {
+  const opt = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  const r = await fetch(path, opt);
+  return r.json().catch(() => ({}));
+}
+const send = (cmd) => api('/api/cmd', { cmd });
+
+// ---------- status ----------
+function fmtSecs(s) {
+  if (!isFinite(s) || s < 0) return '–';
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+}
+function toSecs(hms) {
+  if (!hms) return NaN;
+  const [h, m, s] = hms.split(':').map(Number);
+  return h * 3600 + m * 60 + s;
+}
+function tempText(t) { return t ? `${t.cur.toFixed(0)}° / ${t.target.toFixed(0)}°` : '–'; }
+
+async function pollStatus() {
+  try { status = await api('/api/status'); } catch { status = { connected: false }; }
+  $('conn').classList.toggle('on', !!status.connected);
+  // List the SD files as soon as the printer link is up (on page load and after a reconnect)
+  if (status.connected && !wasConnected) refreshFiles();
+  wasConnected = !!status.connected;
+  $('host').textContent = status.host ? `· ${status.host}` : '';
+  const st = status.connected ? (status.state || '…') : 'OFFLINE';
+  const label = { PRINTING: 'Printing', PAUSE: 'Paused', IDLE: 'Idle', OFFLINE: 'Offline', UNKNOWN: 'Connecting' }[st] || st;
+  $('state').textContent = status.uploading ? 'Uploading' : label;
+  $('state').className = 'badge ' + st;
+
+  const active = st === 'PRINTING' || st === 'PAUSE';
+  const p = status.progress;
+  trackProgress(active && p != null ? p : null, toSecs(status.elapsed));
+  $('jobFile').textContent = active ? (status.file_name || 'Printing') : 'No active print';
+  $('progBar').style.width = (active && p != null ? p : 0) + '%';
+  $('progPct').textContent = active && p != null ? p + '%' : '–';
+  const el = toSecs(status.elapsed);
+  $('elapsed').textContent = active ? (status.elapsed || '–') : '–';
+  $('remaining').textContent = active && p > 0 ? fmtSecs(el * (100 - p) / p) : '–';
+  $('btnPause').disabled = st !== 'PRINTING';
+  $('btnResume').disabled = st !== 'PAUSE';
+  $('btnStop').disabled = !active;
+  document.querySelectorAll('[data-jog],[data-home]').forEach(b => b.disabled = st === 'PRINTING' || !status.connected);
+  document.querySelectorAll('.files button').forEach(b => b.disabled = st !== 'IDLE');
+
+  // Position, limits and fan (M114 over WiFi needs the matching firmware)
+  const L = status.limits || {}, P = status.pos;
+  for (const ax of ['x', 'y', 'z']) {
+    const A = ax.toUpperCase(), t = posTarget[ax];
+    $('pos' + A).textContent = P ? P[ax].toFixed(2) : '–';
+    // A requested position shows (instead of the limit) until the printer reports it
+    if (t && P) {
+      if (t.home) {
+        // Homing: done once the axis has stayed put for 2 polls (at least 3 s after the command)
+        t.stable = (t.last === P[ax]) ? (t.stable || 0) + 1 : 0;
+        t.last = P[ax];
+        if (t.stable >= 2 && Date.now() - t.at > 3000) { learnHome(ax, P[ax]); posTarget[ax] = null; }
+      } else if (Math.abs(P[ax] - t.v) < 0.01) posTarget[ax] = null;
+      if (posTarget[ax] && Date.now() > t.until) posTarget[ax] = null;
+    }
+    const pending = posTarget[ax];
+    $('lim' + A).textContent = pending ? (pending.v == null ? '→ home' : `→ ${pending.v.toFixed(2)}`)
+                                       : L[ax] ? `max ${L[ax][1]}` : '';
+  }
+  const fanPct = status.fan == null ? null : Math.round(status.fan / 255 * 100);
+  $('fanPct').textContent = fanPct == null ? '–' : fanPct + '%';
+  // A requested speed stays shown in grey until the printer reports it (or 15 s pass)
+  if (fanTarget != null && fanPct != null && (Math.abs(fanPct - fanTarget) <= 1 || Date.now() - fanTargetAt > 15000)) fanTarget = null;
+  $('fanTarget').textContent = fanTarget != null ? `→ ${fanTarget}%` : '';
+  if (fanPct != null && fanTarget == null && !fanDragging) $('fanSet').value = fanPct;
+
+  const t = status.temps || {};
+  $('tNozzle').textContent = tempText(t.T0);
+  $('tBed').textContent = tempText(t.B);
+  if (t.T0 || t.B) {
+    history.push({ t: Date.now(), n: t.T0?.cur, nt: t.T0?.target, b: t.B?.cur, bt: t.B?.target });
+    const cutoff = Date.now() - 15 * 60 * 1000;
+    while (history.length && history[0].t < cutoff) history.shift();
+    drawChart();
+  }
+  updateUploadFromStatus();
+  if ($('infoBox').classList.contains('show')) renderInfo();
+  if (active) autoPreview();
+  drawPreview();
+}
+
+// ---------- temperature chart ----------
+function fitCanvas(c) {
+  const r = c.getBoundingClientRect(), d = devicePixelRatio || 1;
+  if (c.width !== Math.round(r.width * d) || c.height !== Math.round(r.height * d)) {
+    c.width = Math.round(r.width * d); c.height = Math.round(r.height * d);
+  }
+  const ctx = c.getContext('2d'); ctx.setTransform(d, 0, 0, d, 0, 0);
+  return { ctx, w: r.width, h: r.height };
+}
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function drawChart() {
+  const { ctx, w, h } = fitCanvas($('chart'));
+  ctx.clearRect(0, 0, w, h);
+  if (history.length < 2) return;
+  const max = Math.max(60, ...history.flatMap(p => [p.n, p.nt, p.b, p.bt].filter(v => v != null))) * 1.1;
+  const t0 = history[0].t, t1 = history[history.length - 1].t || t0 + 1;
+  const X = (t) => 30 + (w - 34) * (t - t0) / Math.max(1, t1 - t0);
+  const Y = (v) => h - 14 - (h - 22) * v / max;
+  ctx.font = '10px system-ui'; ctx.fillStyle = css('--muted'); ctx.strokeStyle = css('--line');
+  for (let v = 0; v <= max; v += 50) { ctx.beginPath(); ctx.moveTo(30, Y(v)); ctx.lineTo(w, Y(v)); ctx.stroke(); ctx.fillText(v, 2, Y(v) + 3); }
+  const line = (key, color, dash) => {
+    ctx.beginPath(); ctx.setLineDash(dash ? [4, 4] : []); ctx.strokeStyle = color; ctx.lineWidth = dash ? 1 : 2;
+    let first = true;
+    for (const p of history) { if (p[key] == null) continue; first ? ctx.moveTo(X(p.t), Y(p[key])) : ctx.lineTo(X(p.t), Y(p[key])); first = false; }
+    ctx.stroke(); ctx.setLineDash([]);
+  };
+  line('nt', '#e8590c', true); line('bt', '#2f9e44', true);
+  line('n', '#e8590c'); line('b', '#2f9e44');
+  ctx.fillStyle = '#e8590c'; ctx.fillText('Nozzle', w - 90, 12); ctx.fillStyle = '#2f9e44'; ctx.fillText('Bed', w - 40, 12);
+}
+
+// ---------- G-code parsing and preview ----------
+function parseGcode(text) {
+  // Collect extrusion moves per layer, with the byte offset of each move.
+  const layers = []; let cur = null;
+  const hasMarkers = /^;LAYER:\d+/m.test(text);   // Cura marks each layer with ;LAYER:n
+  let x = 0, y = 0, z = 0, e = 0, absXYZ = true, absE = true, off = 0;
+  const enc = new TextEncoder();
+  let start = 0;
+  while (start < text.length) {
+    let end = text.indexOf('\n', start); if (end < 0) end = text.length;
+    const raw = text.slice(start, end);
+    const lineOff = off;
+    off += /^[\x00-\x7f]*$/.test(raw) ? raw.length + 1 : enc.encode(raw).length + 1;
+    start = end + 1;
+    if (hasMarkers && raw.startsWith(';LAYER:')) {
+      cur = { z: null, segs: [], first: lineOff, last: lineOff }; layers.push(cur);
+      continue;
+    }
+    const line = raw.split(';')[0].trim().toUpperCase();
+    if (!line) continue;
+    const word = line.split(/\s+/)[0];
+    if (word === 'G90') { absXYZ = true; absE = true; continue; }
+    if (word === 'G91') { absXYZ = false; absE = false; continue; }
+    if (word === 'M82') { absE = true; continue; }
+    if (word === 'M83') { absE = false; continue; }
+    if (word === 'G92') { const m = line.match(/E(-?[\d.]+)/); if (m) e = parseFloat(m[1]); continue; }
+    if (word !== 'G0' && word !== 'G1') continue;
+    const get = (k) => { const m = line.match(new RegExp(k + '(-?[\\d.]+)')); return m ? parseFloat(m[1]) : null; };
+    const nx = get('X'), ny = get('Y'), nz = get('Z'), ne = get('E');
+    const px = x, py = y;
+    if (nx != null) x = absXYZ ? nx : x + nx;
+    if (ny != null) y = absXYZ ? ny : y + ny;
+    if (nz != null) z = absXYZ ? nz : z + nz;
+    let extruding = false;
+    if (ne != null) { const de = absE ? ne - e : ne; extruding = de > 0; e = absE ? ne : e + ne; }
+    if (extruding && (x !== px || y !== py)) {
+      if (hasMarkers) {
+        if (!cur) continue;               // purge moves before ;LAYER:0
+        if (cur.z == null) cur.z = z;
+      } else if (!cur || Math.abs(cur.z - z) > 1e-4) {
+        cur = { z, segs: [], first: lineOff, last: lineOff }; layers.push(cur);
+      }
+      cur.segs.push(px, py, x, y, lineOff); cur.last = lineOff;
+    }
+  }
+  return layers.filter(l => l.segs.length)
+    .map(l => ({ z: l.z, first: l.first, last: l.last, segs: Float64Array.from(l.segs) }));
+}
+
+async function loadPreview(name) {
+  if (!name) return;
+  const r = await fetch('/api/gcode?name=' + encodeURIComponent(name));
+  if (!r.ok) { toast('Preview file not found'); return; }
+  const text = await r.text();
+  setModel(text, new TextEncoder().encode(text).length, name);
+}
+function setModel(text, size, name) {
+  model = parseGcode(text); modelSize = size; model.name = name;
+  // Bounding box of all extrusion, used to zoom the view on the part
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const l of model) for (let i = 0; i < l.segs.length; i += 5) {
+    for (const [x, y] of [[l.segs[i], l.segs[i + 1]], [l.segs[i + 2], l.segs[i + 3]]]) {
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+  }
+  model.box = isFinite(x0) ? { x0, y0, x1, y1 } : null;
+  $('layer').max = Math.max(0, model.length - 1);
+  $('layer').value = 0;
+  if (!model.length) toast('No extrusion moves found in ' + name);
+  v3.flat = null;
+  if (viewMode === '3d') build3D();
+  drawPreview();
+}
+function autoPreview() {
+  // Pick the cached copy whose size matches the file being printed.
+  if (!status.file_size || (model && modelSize === status.file_size)) return;
+  const hit = cached.find(c => c.size === status.file_size);
+  if (hit && $('previewSel').value !== hit.name) { $('previewSel').value = hit.name; loadPreview(hit.name); }
+}
+// M27 only reports whole percents (a new one every ~10-15 s on a 1 MB file), so the view
+// moves smoothly about one report behind the printer instead of jumping, and never shows
+// a position the printer hasn't reported yet. It moves at the print's average speed,
+// scaled by how far behind it is: one percent behind = real speed, closer = slower,
+// further = faster. So it keeps moving between reports instead of stopping.
+const anim = { disp: null, target: null, rate: 0, t: 0, timer: null };
+function animPct() { return anim.disp; }
+function trackProgress(p, elapsedSecs) {
+  if (p == null) {
+    anim.disp = anim.target = null;
+    if (anim.timer) { clearInterval(anim.timer); anim.timer = null; }
+    return;
+  }
+  if (elapsedSecs > 0 && p > 0) anim.rate = p / elapsedSecs; // percent per second
+  // First report, a new print or a big jump: start one percent behind it
+  if (anim.disp == null || p < anim.target || p - anim.disp > 3) anim.disp = Math.max(0, p - 1);
+  anim.target = p;
+  if (!anim.timer) {
+    anim.t = performance.now();
+    anim.timer = setInterval(() => {
+      const now = performance.now(), dt = (now - anim.t) / 1000;
+      anim.t = now;
+      const lag = anim.target - anim.disp;
+      if (lag <= 0 || !anim.rate) return;
+      anim.disp = Math.min(anim.target, anim.disp + anim.rate * lag * dt);
+      drawPreview();
+    }, 100);
+  }
+}
+function printOffset() {
+  const active = status.state === 'PRINTING' || status.state === 'PAUSE';
+  const pct = animPct();
+  if (!active || pct == null || !model || (status.file_size && status.file_size !== modelSize)) return null;
+  return pct / 100 * modelSize;
+}
+function currentLayer() {
+  const pos = printOffset();
+  if (pos == null) return -1;
+  const i = model.findIndex(l => l.last >= pos);
+  return i < 0 ? model.length - 1 : i;
+}
+function updateJobLayer() {
+  const active = status.state === 'PRINTING' || status.state === 'PAUSE';
+  const li = active && model && model.length ? currentLayer() : -1;
+  $('jobLayer').textContent = li >= 0 ? `Layer ${li + 1} / ${model.length}` : '';
+  $('jobLayerHint').textContent = li >= 0 ? `Z ${model[li].z.toFixed(2)} mm` :
+    active ? 'Layer: open its G-code in the preview' : '';
+}
+function drawPreview() {
+  updateJobLayer();
+  if (viewMode === '3d') {
+    if (model && model.length) {
+      if (printOffset() != null && $('follow').checked) $('layer').value = currentLayer();
+      const l = model[+$('layer').value];
+      $('layerInfo').textContent = `Layer ${+$('layer').value + 1} / ${model.length} · Z ${l.z.toFixed(2)} mm` + (model.name ? ` · ${model.name}` : '');
+    } else $('layerInfo').textContent = '–';
+    update3D();
+    return;
+  }
+  const { ctx, w, h } = fitCanvas($('preview'));
+  ctx.clearRect(0, 0, w, h);
+  // View: the part's bounding box plus a margin, or the whole bed when nothing is loaded
+  const b = model && model.box, pad = 8;
+  const vx0 = b ? b.x0 - pad : 0, vy0 = b ? b.y0 - pad : 0, vx1 = b ? b.x1 + pad : BED.x, vy1 = b ? b.y1 + pad : BED.y;
+  const s = Math.min(w / (vx1 - vx0), h / (vy1 - vy0)) * 0.96;
+  const ox = (w - (vx1 - vx0) * s) / 2 - vx0 * s, oy = (h - (vy1 - vy0) * s) / 2 + vy1 * s;
+  const P = (x, y) => [ox + x * s, oy - y * s];
+  ctx.strokeStyle = css('--line'); ctx.lineWidth = 1;
+  { const [a, c] = P(0, BED.y), [d, e] = P(BED.x, 0); ctx.strokeRect(a, c, d - a, e - c); }
+  if (!model || !model.length) { $('layerInfo').textContent = '–'; return; }
+  const pos = printOffset();
+  let li = +$('layer').value;
+  if (pos != null && $('follow').checked) {
+    li = currentLayer();
+    $('layer').value = li;
+  }
+  const layer = model[li];
+  const drawSegs = (segs, color, width, filter) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+    for (let i = 0; i < segs.length; i += 5) {
+      if (filter && !filter(segs[i + 4])) continue;
+      const [a, b] = P(segs[i], segs[i + 1]), [c, d] = P(segs[i + 2], segs[i + 3]);
+      ctx.moveTo(a, b); ctx.lineTo(c, d);
+    }
+    ctx.stroke();
+  };
+  if (li > 0) drawSegs(model[li - 1].segs, css('--below'), 1);
+  const lw = Math.max(1, 0.4 * s);
+  if (pos == null || pos >= layer.last) drawSegs(layer.segs, pos == null ? css('--todo') : css('--done'), lw);
+  else if (pos < layer.first) drawSegs(layer.segs, css('--todo'), lw);
+  else {
+    const sg = layer.segs;
+    // The move in progress: the last one that starts before pos
+    let cur = -1;
+    for (let i = 0; i < sg.length; i += 5) { if (sg[i + 4] < pos) cur = i; else break; }
+    drawSegs(sg, css('--todo'), lw, o => o >= pos);
+    drawSegs(sg, css('--done'), lw, o => o < pos && o !== (cur >= 0 ? sg[cur + 4] : -1));
+    let hx, hy;
+    if (cur >= 0) {
+      // Walk along the current move by how far pos is between its offset and the next one's
+      const next = cur + 5 < sg.length ? sg[cur + 9] : layer.last;
+      const f = next > sg[cur + 4] ? Math.min(1, (pos - sg[cur + 4]) / (next - sg[cur + 4])) : 1;
+      hx = sg[cur] + (sg[cur + 2] - sg[cur]) * f; hy = sg[cur + 1] + (sg[cur + 3] - sg[cur + 1]) * f;
+      const [a, b] = P(sg[cur], sg[cur + 1]), [c, d] = P(hx, hy);
+      ctx.strokeStyle = css('--todo'); ctx.lineWidth = lw; ctx.beginPath();
+      { const [e, g] = P(sg[cur + 2], sg[cur + 3]); ctx.moveTo(c, d); ctx.lineTo(e, g); } ctx.stroke();
+      ctx.strokeStyle = css('--done'); ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
+    } else { hx = sg[0]; hy = sg[1]; }
+    { const [a, b] = P(hx, hy); ctx.fillStyle = css('--head'); ctx.beginPath(); ctx.arc(a, b, 5, 0, 7); ctx.fill(); }
+  }
+  $('layerInfo').textContent = `Layer ${li + 1} / ${model.length} · Z ${layer.z.toFixed(2)} mm` + (model.name ? ` · ${model.name}` : '');
+}
+$('layer').addEventListener('input', () => { $('follow').checked = false; drawPreview(); });
+$('follow').addEventListener('change', drawPreview);
+$('previewSel').addEventListener('change', (e) => loadPreview(e.target.value));
+$('localGcode').addEventListener('change', async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  setModel(await f.text(), f.size, f.name); e.target.value = '';
+});
+
+// ---------- 3D view (three.js) ----------
+let viewMode = '2d';
+const v3 = { ready: false };
+function flatten(m) {
+  // One position buffer for every extrusion segment, in file order, plus offsets and layer ends.
+  let n = 0; for (const l of m) n += l.segs.length / 5;
+  const pos = new Float32Array(n * 6), offs = new Float64Array(n), layerEnd = new Uint32Array(m.length);
+  let k = 0;
+  m.forEach((l, li) => {
+    const s = l.segs, z = l.z;
+    for (let i = 0; i < s.length; i += 5, k++) {
+      // G-code X/Y/Z to three.js: x = X, y = Z (up), z = -Y
+      pos.set([s[i], z, -s[i + 1], s[i + 2], z, -s[i + 3]], k * 6);
+      offs[k] = s[i + 4];
+    }
+    layerEnd[li] = k;
+  });
+  return { pos, offs, layerEnd, n };
+}
+function init3D() {
+  if (v3.ready) return true;
+  if (!window.THREE || !THREE.OrbitControls) { toast('3D view needs internet access to load three.js'); return false; }
+  const box = $('view3d');
+  v3.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  v3.renderer.setPixelRatio(devicePixelRatio || 1);
+  box.append(v3.renderer.domElement);
+  v3.scene = new THREE.Scene();
+  v3.camera = new THREE.PerspectiveCamera(40, 1, 1, 5000);
+  v3.controls = new THREE.OrbitControls(v3.camera, v3.renderer.domElement);
+  v3.controls.addEventListener('change', render3D);
+  const grid = new THREE.GridHelper(BED.x, BED.x / 10, css('--muted'), css('--line'));
+  grid.position.set(BED.x / 2, 0, -BED.y / 2);
+  v3.scene.add(grid);
+  v3.nozzle = new THREE.Mesh(new THREE.SphereGeometry(1.6, 16, 12), new THREE.MeshBasicMaterial({ color: css('--nozzle') }));
+  v3.nozzle.visible = false;
+  v3.scene.add(v3.nozzle);
+  v3.ready = true;
+  return true;
+}
+function build3D() {
+  if (!v3.ready) return;
+  for (const o of [v3.done, v3.todo]) if (o) { v3.scene.remove(o); o.geometry.dispose(); o.material.dispose(); }
+  v3.done = v3.todo = v3.flat = null;
+  if (!model || !model.length) { render3D(); return; }
+  v3.flat = flatten(model);
+  const attr = new THREE.BufferAttribute(v3.flat.pos, 3);
+  // Shade by height (darker low, lighter high) so the shape reads as 3D
+  const zTopShade = Math.max(1, model[model.length - 1].z);
+  const shaded = (hex) => {
+    const c = new THREE.Color(hex), out = new Float32Array(v3.flat.pos.length), p = v3.flat.pos;
+    for (let i = 0; i < p.length; i += 3) {
+      const k = 0.45 + 0.55 * (p[i + 1] / zTopShade);
+      out[i] = c.r * k; out[i + 1] = c.g * k; out[i + 2] = c.b * k;
+    }
+    return new THREE.BufferAttribute(out, 3);
+  };
+  const g1 = new THREE.BufferGeometry(), g2 = new THREE.BufferGeometry();
+  g1.setAttribute('position', attr); g2.setAttribute('position', attr);
+  g1.setAttribute('color', shaded(css('--done'))); g2.setAttribute('color', shaded(css('--todo')));
+  v3.done = new THREE.LineSegments(g1, new THREE.LineBasicMaterial({ vertexColors: true }));
+  v3.todo = new THREE.LineSegments(g2, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.4 }));
+  v3.done.frustumCulled = v3.todo.frustumCulled = false;
+  v3.scene.add(v3.todo, v3.done);
+  // Aim the camera at the part
+  const b = model.box, zTop = model[model.length - 1].z;
+  const cx = (b.x0 + b.x1) / 2, cz = -(b.y0 + b.y1) / 2, size = Math.max(b.x1 - b.x0, b.y1 - b.y0, zTop, 20);
+  v3.controls.target.set(cx, zTop / 2, cz);
+  v3.camera.position.set(cx + size * 0.9, zTop / 2 + size * 0.9, cz + size * 1.3);
+  v3.controls.update();
+}
+function resize3D() {
+  if (!v3.ready) return;
+  const r = $('view3d').getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  v3.renderer.setSize(r.width, r.height, false);
+  v3.renderer.domElement.style.width = '100%'; v3.renderer.domElement.style.height = '100%';
+  v3.camera.aspect = r.width / r.height; v3.camera.updateProjectionMatrix();
+}
+function render3D() { if (v3.ready) v3.renderer.render(v3.scene, v3.camera); }
+function update3D() {
+  if (!v3.ready || !v3.flat) { render3D(); return; }
+  const f = v3.flat, pos = printOffset();
+  let limit = f.n, li = +$('layer').value;
+  if (pos != null && $('follow').checked) li = currentLayer();
+  if (!$('follow').checked || pos == null) limit = f.layerEnd[li] ?? f.n;
+  let k = limit;
+  if (pos != null) {
+    // First segment not printed yet (offsets are increasing)
+    let lo = 0, hi = f.n;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (f.offs[mid] < pos) lo = mid + 1; else hi = mid; }
+    k = Math.min(lo, limit);
+  }
+  v3.done.geometry.setDrawRange(0, k * 2);
+  v3.todo.geometry.setDrawRange(k * 2, Math.max(0, limit - k) * 2);
+  v3.nozzle.visible = pos != null && k < f.n;
+  if (v3.nozzle.visible) v3.nozzle.position.set(f.pos[k * 6], f.pos[k * 6 + 1], f.pos[k * 6 + 2]);
+  render3D();
+}
+function setView(mode) {
+  if (mode === '3d' && !init3D()) return;
+  viewMode = mode;
+  document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === mode));
+  $('preview').style.display = mode === '2d' ? '' : 'none';
+  $('view3d').style.display = mode === '3d' ? '' : 'none';
+  if (mode === '3d') { resize3D(); if (!v3.flat && model) build3D(); }
+  drawPreview();
+}
+document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => setView(b.dataset.view));
+
+// ---------- files ----------
+async function refreshFiles() {
+  $('btnFiles').disabled = true;
+  const r = await api('/api/files');
+  $('btnFiles').disabled = false;
+  sdFiles = r.files || []; cached = r.cached || [];
+  renderCached();
+  const ul = $('files'); ul.innerHTML = '';
+  if (!sdFiles.length) { ul.innerHTML = '<li class="muted">No files (or no answer from the printer)</li>'; return; }
+  for (const f of sdFiles) {
+    const li = document.createElement('li');
+    const span = document.createElement('span');
+    span.innerHTML = '';
+    const main = document.createElement('div'); main.textContent = f.copy || f.short;
+    span.append(main);
+    if (f.copy) {
+      const sub = document.createElement('div'); sub.className = 'hint'; sub.textContent = f.short;
+      span.append(sub);
+      span.style.cursor = 'pointer'; span.title = 'Show in the preview';
+      span.onclick = () => { $('previewSel').value = f.copy; loadPreview(f.copy); };
+    } else span.title = f.short + ' (no copy on this PC: no preview)';
+    const btn = document.createElement('button'); btn.className = 'sm'; btn.textContent = 'Print'; btn.disabled = status.state !== 'IDLE';
+    btn.onclick = async () => { await api('/api/print', { name: f.short }); toast('Starting ' + (f.copy || f.short)); };
+    li.append(span, btn); ul.append(li);
+  }
+}
+function renderCached() {
+  // Preview list: SD files that have a copy on this PC first, then other copies.
+  const sel = $('previewSel'), keep = sel.value;
+  sel.innerHTML = '<option value="">Choose a G-code…</option>';
+  const add = (parent, value, label, disabled) => {
+    const o = document.createElement('option'); o.value = value; o.textContent = label; o.disabled = !!disabled; parent.append(o);
+  };
+  const onSd = new Set();
+  if (sdFiles.length) {
+    const g = document.createElement('optgroup'); g.label = 'On the SD card';
+    for (const f of sdFiles) {
+      if (f.copy) { onSd.add(f.copy); add(g, f.copy, `${f.copy}  (${f.short})`); }
+      else add(g, '', `${f.short}  (no copy on this PC)`, true);
+    }
+    sel.append(g);
+  }
+  const rest = cached.filter(c => !onSd.has(c.name));
+  if (rest.length) {
+    const g = document.createElement('optgroup'); g.label = 'Other copies on this PC';
+    for (const c of rest) add(g, c.name, c.name);
+    sel.append(g);
+  }
+  sel.value = keep;
+}
+$('btnFiles').onclick = refreshFiles;
+let uploadBusy = false;
+function fmtBytes(n) { return n > 1e6 ? (n / 1e6).toFixed(1) + ' MB' : Math.round(n / 1e3) + ' KB'; }
+function showUpload(name, pct, text, cls, busy) {
+  $('upBox').className = 'upload show' + (cls ? ' ' + cls : '');
+  $('upName').textContent = name;
+  $('upPct').textContent = pct == null ? '' : pct + '%';
+  $('upBar').style.width = (pct || 0) + '%';
+  $('upBarWrap').classList.toggle('busy', !!busy);
+  $('upStatus').textContent = text;
+}
+function updateUploadFromStatus() {
+  // Real progress of the WiFi transfer, measured by the server
+  const u = status.uploading;
+  if (!u || !uploadBusy) return;
+  const pct = Math.floor(u.sent / u.total * 100);
+  const secs = Date.now() / 1000 - u.started;
+  const rate = u.sent / Math.max(1, secs);
+  const left = rate > 0 ? (u.total - u.sent) / rate : NaN;
+  if (u.phase === 'finishing') showUpload(u.name, 100, 'Waiting for the printer to confirm…', '', true);
+  else showUpload(u.name, pct, `${fmtBytes(u.sent)} of ${fmtBytes(u.total)} · ${fmtBytes(rate)}/s · ${fmtSecs(left)} left`);
+}
+function uploadFile(f, andPrint) {
+  if (uploadBusy) { toast('An upload is already running'); return; }
+  if (!/\.(gcode|gco|g)$/i.test(f.name)) { toast('Only G-code files (.gcode or .gco)'); return; }
+  if (status.state !== 'IDLE') { toast('The printer only accepts uploads while idle'); return; }
+  uploadBusy = true;
+  showUpload(f.name, 0, andPrint ? 'Preparing… it will print when the upload ends' : 'Preparing…');
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload?name=' + encodeURIComponent(f.name));
+  xhr.onload = async () => {
+    uploadBusy = false;
+    let r = {}; try { r = JSON.parse(xhr.responseText); } catch {}
+    if (!r.ok) { showUpload(f.name, null, 'Upload failed: ' + (r.error || r.body || xhr.status), 'fail'); return; }
+    // The server kept a copy: show it in the preview right away
+    api('/api/cached').then(c => { cached = c || []; renderCached(); $('previewSel').value = r.name; loadPreview(r.name); });
+    if (andPrint) {
+      showUpload(r.name, 100, 'Uploaded · starting print…', 'done');
+      await new Promise(res => setTimeout(res, 3000));   // let the module hand the last block to the board
+      await api('/api/print', { name: r.name });
+      showUpload(r.name, 100, 'Uploaded · print started ✓', 'done');
+    } else {
+      showUpload(r.name, 100, 'Uploaded ✓', 'done');
+    }
+    setTimeout(refreshFiles, 2000);
+  };
+  xhr.onerror = () => { uploadBusy = false; showUpload(f.name, null, 'Upload failed (dashboard server unreachable)', 'fail'); };
+  xhr.send(f);
+}
+$('upFile').addEventListener('change', (e) => {
+  const f = e.target.files[0]; if (f) uploadFile(f, false); e.target.value = '';
+});
+
+// Drag and drop anywhere on the page
+let dragDepth = 0;
+const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+addEventListener('dragenter', (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault(); dragDepth++;
+  $('drop').classList.add('show');
+  $('drop').classList.toggle('blocked', status.state !== 'IDLE' || uploadBusy);
+});
+addEventListener('dragleave', (e) => {
+  if (!hasFiles(e)) return;
+  if (--dragDepth <= 0) { dragDepth = 0; $('drop').classList.remove('show'); }
+});
+addEventListener('dragover', (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  document.querySelectorAll('[data-drop]').forEach(z => z.classList.toggle('over', z.contains(e.target)));
+});
+addEventListener('drop', (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault(); dragDepth = 0;
+  $('drop').classList.remove('show');
+  const zone = e.target.closest && e.target.closest('[data-drop]');
+  const f = e.dataTransfer.files[0];
+  if (f && zone) uploadFile(f, zone.dataset.drop === 'print');
+});
+
+// ---------- controls ----------
+$('btnPause').onclick = () => api('/api/pause', {});
+$('btnResume').onclick = () => api('/api/resume', {});
+$('btnStop').onclick = (e) => {
+  const b = e.currentTarget;
+  if (!b.classList.contains('armed')) {
+    b.classList.add('armed'); b.textContent = 'Confirm cancel';
+    setTimeout(() => { b.classList.remove('armed'); b.textContent = 'Cancel'; }, 4000);
+    return;
+  }
+  b.classList.remove('armed'); b.textContent = 'Cancel';
+  api('/api/stop', {}); toast('Cancelling print');
+};
+document.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
+  step = +b.dataset.step;
+  document.querySelectorAll('[data-step]').forEach(x => x.classList.toggle('on', x === b));
+});
+const posTarget = { x: null, y: null, z: null };
+function setPosTarget(ax, v, secs, home = false) {
+  const lim = (status.limits || {})[ax];
+  if (lim && v != null) v = Math.min(lim[1], Math.max(lim[0], v));   // software endstops clamp the move the same way
+  posTarget[ax] = { v, home, at: Date.now(), until: Date.now() + secs * 1000 };
+}
+const learnedHome = {};
+function learnHome(ax, v) {
+  // Tell the server where this printer's G28 leaves the axis (differs between printers)
+  if ((status.home || {})[ax] === v || learnedHome[ax] === v) return;
+  learnedHome[ax] = v;
+  api('/api/home-learned', { [ax]: v });
+}
+document.querySelectorAll('[data-jog]').forEach(b => b.onclick = () => {
+  const axis = b.dataset.jog, ax = axis.toLowerCase(), d = step * +b.dataset.dir, f = axis === 'Z' ? 600 : 3000;
+  // Stack on a pending target so several quick clicks add up
+  const base = posTarget[ax] ? posTarget[ax].v : status.pos ? status.pos[ax] : null;
+  if (base != null) setPosTarget(ax, base + d, 15);
+  send(`G91\nG1 ${axis}${d} F${f}\nG90`);
+});
+document.querySelectorAll('[data-home]').forEach(b => b.onclick = () => {
+  const axes = b.dataset.home ? b.dataset.home.toLowerCase().split(' ') : ['x', 'y', 'z'];
+  // Show where G28 leaves each axis once it's known (learned after the first home)
+  const home = status.home || {};
+  for (const ax of axes) setPosTarget(ax, home[ax] ?? learnedHome[ax] ?? null, 60, true);
+  send(('G28 ' + b.dataset.home).trim());
+});
+document.querySelectorAll('[data-raw]').forEach(b => b.onclick = () => send(b.dataset.raw));
+document.querySelectorAll('[data-heat]').forEach(b => b.onclick = () => {
+  const nozzle = b.dataset.heat === 'nozzle', v = +$(nozzle ? 'setNozzle' : 'setBed').value;
+  if (!(v >= 0)) return;
+  send(nozzle ? `M104 S${v}` : `M140 S${v}`);
+});
+document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
+  const [n, bed] = b.dataset.preset.split(',');
+  send(`M104 S${n}\nM140 S${bed}`);
+});
+
+// ---------- console ----------
+async function pollConsole() {
+  const lines = await api('/api/console?since=' + consoleSeq).catch(() => []);
+  if (!lines.length) return;
+  const box = $('console'), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
+  for (const l of lines) {
+    consoleSeq = l.seq;
+    const div = document.createElement('div');
+    const tag = document.createElement('span'); tag.className = 'src';
+    tag.textContent = l.kind === 'tx' ? (l.src === 'cura' ? 'Cura ›' : 'You ›') : l.kind === 'rx' ? '‹' : '•';
+    div.append(tag, document.createTextNode(' ' + l.text));
+    div.className = [l.kind, 'from-' + l.src, l.poll ? 'poll' : ''].join(' ');  // 'from-' avoids clashing with .panel
+    box.append(div);
+  }
+  while (box.childNodes.length > 3000) box.firstChild.remove();
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+$('showPolls').addEventListener('change', (e) => {
+  $('console').classList.toggle('show-polls', e.target.checked);
+  $('console').scrollTop = $('console').scrollHeight;
+});
+let fanDragging = false, fanTarget = null, fanTargetAt = 0;
+$('fanSet').addEventListener('input', (e) => { fanDragging = true; $('fanTarget').textContent = `→ ${e.target.value}%`; });
+$('fanSet').addEventListener('change', (e) => {
+  fanDragging = false; fanTarget = +e.target.value; fanTargetAt = Date.now();
+  $('fanTarget').textContent = `→ ${fanTarget}%`;
+  const pct = +e.target.value;
+  send(pct ? `M106 S${Math.round(pct * 255 / 100)}` : 'M107');
+});
+// ---------- info dialog ----------
+function renderInfo() {
+  const i = status.info || {}, L = status.limits || {}, H = status.home || {};
+  const rows = [];
+  const sec = (t) => rows.push(['h3', t]);
+  const row = (k, v) => rows.push([k, v == null || v === '' ? '–' : v]);
+  sec('Firmware');
+  row('Firmware', i.Firmware); row('Distribution date', i.Distribution); row('Built', i.Built);
+  row('Machine', i.Machine); row('Board', i.Board); row('Extruders', i.Extruders);
+  row('Uptime', i.Uptime ? fmtSecs(+i.Uptime + (status.info_at ? (Date.now() / 1000 - status.info_at) : 0)) : null);
+  sec('Motion');
+  row('Steps/mm', i.StepsPerMM); row('Max feedrate (mm/s)', i.MaxFeedrate);
+  row('Max acceleration (mm/s²)', i.MaxAccel); row('Acceleration (mm/s²)', i.Accel);
+  row('Travel limits (mm)', L.x ? `X ${L.x[0]}–${L.x[1]} · Y ${L.y[0]}–${L.y[1]} · Z ${L.z[0]}–${L.z[1]}` : null);
+  row('Position after home', ['x', 'y', 'z'].map(a => `${a.toUpperCase()} ${H[a] ?? '?'}`).join(' · ') + (Object.values(H).some(v => v == null) ? '  (learned after a home)' : ''));
+  sec('Temperature');
+  row('Hotend PID', i.HotendPID);
+  sec('Connection');
+  row('Printer WiFi', status.host); row('Link', status.connected ? 'connected' : 'offline');
+  row('Cura relay', status.cura_clients ? `${status.cura_clients} client(s) on 127.0.0.1` : 'no client');
+  if (!i.Firmware) rows.push(['h3', 'Firmware details need the firmware with the WiFi M360 report']);
+  const dl = $('infoList'); dl.innerHTML = '';
+  for (const [k, v] of rows) {
+    if (k === 'h3') { const h = document.createElement('h3'); h.textContent = v; dl.append(h); continue; }
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = v;
+    dl.append(dt, dd);
+  }
+}
+$('btnInfo').onclick = () => { renderInfo(); $('infoBox').classList.add('show'); };
+$('infoClose').onclick = () => $('infoBox').classList.remove('show');
+$('infoBox').addEventListener('click', (e) => { if (e.target.id === 'infoBox') $('infoBox').classList.remove('show'); });
+addEventListener('keydown', (e) => { if (e.key === 'Escape') $('infoBox').classList.remove('show'); });
+$('cmdForm').onsubmit = (e) => {
+  e.preventDefault();
+  const v = $('cmd').value.trim(); if (!v) return;
+  send(v); $('cmd').value = '';
+};
+
+// ---------- start ----------
+api('/api/cached').then(async c => {
+  cached = c || []; renderCached();
+  // ?preview=<cached name>&layer=<n> opens a preview directly
+  const qs = new URLSearchParams(location.search), name = qs.get('preview');
+  if (name) {
+    $('previewSel').value = name; await loadPreview(name);
+    if (qs.has('layer')) { $('follow').checked = false; $('layer').value = +qs.get('layer') - 1; drawPreview(); }
+    if (qs.get('view') === '3d') setView('3d');
+  }
+});
+pollStatus(); pollConsole();
+setInterval(pollStatus, 1500);
+setInterval(() => { if (uploadBusy) pollStatus(); }, 500);
+setInterval(pollConsole, 1500);
+addEventListener('resize', () => { drawChart(); resize3D(); drawPreview(); });
+</script>
+</body>
+</html>
